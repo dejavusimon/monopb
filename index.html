@@ -237,7 +237,7 @@ input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .verl{font-size:11px;color:var(--muted);margin-bottom:4px}
 /* iOS 26 主屏幕网页：系统在顶部画了一层磨砂，会盖住页头。只在 iPhone/iPad 主屏幕模式下把页头往下挪。 */
-html.ios-pwa .app.m .mtop{padding-top:calc(var(--ios-top,44px) + 8px)}
+html.ios-pwa .app.m .mtop{padding-top:30px}
 .mleft{display:flex;align-items:center;gap:4px;min-width:0}
 .backbtn{display:inline-flex;align-items:center;gap:2px;border:0;background:none;color:var(--fg);font-size:15px;font-weight:500;padding:6px 8px 6px 0;white-space:nowrap;flex:none}
 .backbtn:hover{color:var(--accent)}
@@ -316,7 +316,7 @@ let PEOPLE=[];
 let FAMILY={};
 let FAMS=[];
 let TEAM_DEF={},INBOX_EMAIL="公司邮箱";
-const WEB_VERSION="W2026.11.23-3";   // 网页版本号，每次更新都改
+const WEB_VERSION="W2026.11.23-4";   // 网页版本号，每次更新都改
 let API_VERSION="";
 const TYPES=["婚礼 Wedding","生日派对 Birthday","公司活动 Corporate","毕业典礼 Graduation","订婚 Engagement","其他 Other"];
 const EXP_CATS=["耗材（相纸等）","设备","订阅","其他"];
