@@ -338,6 +338,8 @@ let S={events:[],txns:[],inbox:[],params:defaultParams(),venues:{}};
 let META={sheetUrl:"",lastSync:""};
 let READY=false, AUTH=null, LOGIN_ERR="";
 try{AUTH=JSON.parse(localStorage.getItem(AKEY))}catch(e){}
+if(AUTH&&!AUTH.token)AUTH=null;   // 旧版本存的是团队口令，现在改成个人密码登录
+let LG={people:null,who:"",busy:false};   // 登录页的状态
 let VIEW="auto";try{VIEW=localStorage.getItem(VKEY)||"auto"}catch(e){}
 let UI={tab:"home",year:periodOf(TODAY),open:null,ledgerFilter:"all",dataTab:"main",hist:[],pastOpen:false};
 /* 后台接口：Apps Script 网页应用的 /exec 网址。网址本身不是秘密，没有团队口令什么都拿不到。 */
@@ -374,7 +376,7 @@ function pump(){
   if(SENDING||!QUEUE.length)return;
   SENDING=true;setSave("saving");
   const ops=QUEUE.shift();
-  api("apiMutate",AUTH.code,AUTH.who,JSON.stringify(ops)).then(()=>{SENDING=false;setSave(QUEUE.length?"saving":"saved");pump();})
+  api("apiMutate",AUTH.token,JSON.stringify(ops)).then(()=>{SENDING=false;setSave(QUEUE.length?"saving":"saved");pump();})
    .catch(err=>{SENDING=false;QUEUE=[];setSave("error");toast("保存失败："+(err&&err.message||err)+"，已重新载入");load(true);});
 }
 function applyLoad(d){
@@ -382,17 +384,19 @@ function applyLoad(d){
   S.txns=d.txns;S.inbox=d.inbox;S.params={...defaultParams(),...d.params};S.venues=d.venues||{};
   META.sheetUrl=d.sheetUrl;META.lastSync=d.lastSync;
   if(d.team){PEOPLE=d.team.people||[];FAMILY=d.team.family||{};FAMS=[...new Set(PEOPLE.map(p=>FAMILY[p]).filter(Boolean))];TEAM_DEF=d.team.defaults||{};INBOX_EMAIL=d.team.inboxEmail||INBOX_EMAIL;
-    if(AUTH&&!PEOPLE.includes(AUTH.who)){AUTH.who="";}}
+  }
+  if(d.me&&AUTH)AUTH.who=d.me;
   // 2026 场次：已在 10/25 一次结清，按算法还原每人明细（只用于显示，不写回）
   for(const e of S.events)if(e.legacy&&!e.payouts)e.payouts=calc(e).lines.map(p=>({...p,paid:true,legacy:true}));
   SNAP=snapMaps();
   if(!Object.keys(S.venues).length&&S.events.length){rebuildVenues();save();}
 }
+function signedIn(r){AUTH={who:r.who,token:r.token};try{localStorage.setItem(AKEY,JSON.stringify(AUTH))}catch(e){}LOGIN_ERR="";render();load();}
 function load(quiet){
   if(!AUTH)return Promise.resolve();
-  return api("apiLoad",AUTH.code).then(json=>{applyLoad(JSON.parse(json));READY=true;LOGIN_ERR="";render();})
+  return api("apiLoad",AUTH.token).then(json=>{applyLoad(JSON.parse(json));READY=true;LOGIN_ERR="";render();})
    .catch(err=>{const msg=String(err&&err.message||err);
-     if(/口令/.test(msg)){AUTH=null;try{localStorage.removeItem(AKEY)}catch(e){}LOGIN_ERR=/太多/.test(msg)?msg:"团队口令不对，请重新输入";READY=false;}
+     if(/重新登录/.test(msg)){AUTH=null;try{localStorage.removeItem(AKEY)}catch(e){}LOGIN_ERR="登录已失效，请重新登录";READY=false;LG.who="";}
      else if(!quiet)LOGIN_ERR="载入失败："+msg;
      render();});
 }
@@ -590,8 +594,7 @@ const wide=()=>window.innerWidth>760;
 const isM=()=>VIEW==="mobile"||(VIEW==="auto"&&!wide());
 function seg(){return `<div class="seg" role="group" aria-label="显示版本">${[["auto","自动"],["mobile","手机"],["desktop","电脑"]].map(([k,t])=>`<button data-view="${k}" aria-pressed="${VIEW===k}">${t}</button>`).join("")}</div>`;}
 function render(){
-  if(READY&&AUTH&&!AUTH.who){document.getElementById("app").className="app m gate";document.getElementById("framebar").innerHTML="";document.getElementById("main").innerHTML=vWho();document.getElementById("sheetRoot").innerHTML="";return;}
-  const who=AUTH?`<span>${AUTH.who}</span> · <button class="btn sm ghost" data-act="logout" style="padding:0 2px">切换</button>`:"";
+  const who=AUTH?`<span>${AUTH.who}</span> · <button class="btn sm ghost" data-act="chpw" style="padding:0 2px">改密码</button> · <button class="btn sm ghost" data-act="logout" style="padding:0 2px">退出</button>`:"";
   if(!READY){document.getElementById("app").className="app m gate";document.getElementById("framebar").innerHTML="";
     document.getElementById("main").innerHTML=AUTH&&!LOGIN_ERR?`<div class="panel" style="align-items:center;padding:40px 16px"><span class="hint">正在从 Google Sheet 载入…</span></div>`:vLogin();
     document.getElementById("sheetRoot").innerHTML="";return;}
@@ -612,19 +615,34 @@ const yearPick=(ys=periods())=>`<div class="tabs2">${ys.map(y=>`<button data-yea
 
 /* ============ views ============ */
 function vLogin(){
-  return `<div class="login">
-   <img class="logo" src="${document.querySelector(".side .logo").src}" alt="Mono Photobooth" style="width:180px;align-self:center">
-   <div class="panel"><h2>登录</h2>
-    <label class="f">团队口令<input id="lg-code" type="password" inputmode="numeric" autocomplete="current-password"></label>
-    ${LOGIN_ERR?`<span class="chip bad" style="align-self:flex-start">${esc(LOGIN_ERR)}</span>`:""}
-    <button class="btn primary block" data-act="login">进入</button>
-    <p class="hint">口令向管理员要。这台设备会记住你，下次不用再输。</p></div></div>`;
+  const logo=`<img class="logo" src="${document.querySelector(".side .logo").src}" alt="Mono Photobooth" style="width:180px;align-self:center">`;
+  const err=LOGIN_ERR?`<span class="chip bad" style="align-self:flex-start">${esc(LOGIN_ERR)}</span>`:"";
+  if(!LG.people){if(!LG.busy){LG.busy=true;api("apiPeople").then(j=>{LG.people=JSON.parse(j).people;LG.busy=false;render();}).catch(e=>{LG.busy=false;LOGIN_ERR="连不上后台："+e.message;LG.people=[];render();});}
+    return `<div class="login">${logo}<div class="panel" style="align-items:center;padding:28px 16px">${err||`<span class="hint">载入中…</span>`}</div></div>`;}
+  const me=LG.people.find(p=>p.name===LG.who);
+  if(!me) return `<div class="login">${logo}<div class="panel"><h2>我是</h2>
+    <div class="staff" style="gap:8px">${LG.people.map(p=>`<button class="pchip" data-act="lgwho" data-who="${esc(p.name)}">${esc(p.name)}</button>`).join("")}</div>${err}
+    <p class="hint">第一次在这台设备上用，先点自己的名字。</p></div></div>`;
+  const head=`<div class="spread"><h2>${esc(me.name)}</h2><button class="btn sm ghost" data-act="lgback">换人</button></div>`;
+  if(me.hasPw) return `<div class="login">${logo}<div class="panel">${head}
+    <label class="f">密码<input id="lg-pw" type="password" autocomplete="current-password" data-enter="lgin"></label>${err}
+    <button class="btn primary block" data-act="lgin">登录</button>
+    <p class="hint">这台设备会记住你。忘了密码请找管理员重置。</p></div></div>`;
+  return `<div class="login">${logo}<div class="panel">${head}
+    <p class="hint" style="margin:0">你还没有设置密码。设一个自己的密码，以后在任何设备上都用它登录。</p>
+    <label class="f">团队口令（第一次设密码时需要）<input id="lg-code" type="password" inputmode="numeric" autocomplete="off"></label>
+    <label class="f">新密码（至少 6 位）<input id="lg-new" type="password" autocomplete="new-password"></label>
+    <label class="f">再输一次<input id="lg-new2" type="password" autocomplete="new-password" data-enter="lgset"></label>${err}
+    <button class="btn primary block" data-act="lgset">设置密码并登录</button></div></div>`;
 }
-function vWho(){
-  return `<div class="login">
-   <img class="logo" src="${document.querySelector(".side .logo").src}" alt="Mono Photobooth" style="width:180px;align-self:center">
-   <div class="panel"><h2>我是</h2><div class="staff" style="gap:8px">${PEOPLE.map(p=>`<button class="pchip" data-act="pickwho" data-who="${esc(p)}">${esc(p)}</button>`).join("")}</div>
-   <p class="hint">选一次就行，这台设备会记住。</p></div></div>`;
+function chpwSheet(){
+  return `<div class="scrim" data-close></div><aside class="sheet" role="dialog" aria-label="修改密码"><div class="sheet-h"><button class="backbtn" data-close aria-label="返回">‹ 返回</button><h2>修改密码</h2></div>
+  <div class="sheet-b"><section class="panel">
+    <label class="f">原密码<input id="cp-old" type="password" autocomplete="current-password"></label>
+    <label class="f">新密码（至少 6 位）<input id="cp-new" type="password" autocomplete="new-password"></label>
+    <label class="f">再输一次<input id="cp-new2" type="password" autocomplete="new-password"></label>
+    <button class="btn primary block" data-act="chpwsave">保存新密码</button>
+    <p class="hint">改完后，你在其他设备上需要用新密码重新登录。</p></section></div></aside>`;
 }
 function vHome(){
   const s=summary(UI.year),bal=balance(),pre=prepaid();
@@ -916,6 +934,7 @@ function renderSheet0(){
   if(!UI.open){root.innerHTML="";return;}
   if(UI.open==="new"){root.innerHTML=newSheet();return;}
   if(UI.open==="more"){root.innerHTML=moreSheet();return;}
+  if(UI.open==="chpw"){root.innerHTML=chpwSheet();return;}
   const e=S.events.find(x=>x.id===UI.open);if(!e){UI.open=null;root.innerHTML="";return;}
   const k=calc(e),st=status(e),m=isM();
   const stepIdx={booked:0,done:1,settling:2,closed:3}[st.k];
@@ -1039,7 +1058,7 @@ function moreSheet(){
   return `<div class="scrim" data-close></div><aside class="sheet" role="dialog" aria-label="更多"><div class="sheet-h"><button class="backbtn" data-close aria-label="返回">‹ 返回</button><h2>更多</h2></div>
   <div class="sheet-b"><section class="panel" style="padding:4px 14px"><div class="menu">
    ${[["ledger","流水","余额 "+$(balance())],["people","成员账","待付、待报销、现金"],["data","后台数据","原 Excel 格式的六张表"]].map(([k,t,s])=>`<button data-tab="${k}">${ico(k)}<span style="flex:1">${t}<br><span class="hint">${s}</span></span>›</button>`).join("")}
-  </div></section>${wide()?`<div class="row"><span class="hint">显示版本</span>${seg()}</div>`:""}<div class="whoami" id="whoM">${AUTH?`<span>${AUTH.who}</span> · <button class="btn sm ghost" data-act="logout" style="padding:0 2px">切换</button>`:""}</div></div></aside>`;
+  </div></section>${wide()?`<div class="row"><span class="hint">显示版本</span>${seg()}</div>`:""}<div class="whoami" id="whoM">${AUTH?`<span>${AUTH.who}</span> · <button class="btn sm ghost" data-act="chpw" style="padding:0 2px">改密码</button> · <button class="btn sm ghost" data-act="logout" style="padding:0 2px">退出</button>`:""}</div></div></aside>`;
 }
 
 /* ============ interactions ============ */
@@ -1104,16 +1123,23 @@ document.addEventListener("click",ev=>{
     deltxn(){if(b.dataset.armed){S.txns=S.txns.filter(x=>x.id!==d.id);commit("已删除");}else{b.dataset.armed="1";b.textContent="确认删除?";}},
     paydiv(){const s=summary(UI.year);for(const p of Object.keys(S.params.shares)){const x=(s.div[p]||0)-(s.divPaid[p]||0);if(x>0)S.txns.push({id:uid(),kind:"payout",sub:"分红",year:UI.year,date:TODAY,party:p,amount:x});}commit("分红已发放");},
     reload(){load().then(()=>toast("已刷新"));},
-    syncnow(){b.disabled=true;b.textContent="检查中…";api("apiSyncNow",AUTH.code).then(j=>{const r=JSON.parse(j);toast(r.added?`读到 ${r.added} 笔新到账，自动入账 ${r.auto} 笔`:"没有新的到账通知");return load(true);}).catch(e=>{toast("检查失败："+(e.message||e));b.disabled=false;});},
+    syncnow(){b.disabled=true;b.textContent="检查中…";api("apiSyncNow",AUTH.token).then(j=>{const r=JSON.parse(j);toast(r.added?`读到 ${r.added} 笔新到账，自动入账 ${r.auto} 笔`:"没有新的到账通知");return load(true);}).catch(e=>{toast("检查失败："+(e.message||e));b.disabled=false;});},
     back(){if(UI.open){UI.open=null;renderSheet();return;}let t=UI.hist.pop();while(t&&MORE.includes(t))t=UI.hist.pop();UI.tab=t||"home";render();UI.open="more";renderSheet();},
     tpick(){const isNew=d.tfor==="new";const e=isNew?null:S.events.find(x=>x.id===UI.open);
       const cur=isNew?document.getElementById("n-time").value:(e&&e.time)||"";
       openWheel(cur,val=>{if(isNew){document.getElementById("n-time").value=val;document.getElementById("n-time-b").innerHTML=tLabel(val);}else if(e){e.time=val;commit();}});},
     togglepast(){UI.pastOpen=!UI.pastOpen;render();},
-    pickwho(){AUTH.who=d.who;try{localStorage.setItem(AKEY,JSON.stringify(AUTH))}catch(e){}render();},
-    login(){const code=v("lg-code").trim();if(!code){toast("请输入团队口令");return;}
-      AUTH={who:(AUTH&&AUTH.who)||"",code};try{localStorage.setItem(AKEY,JSON.stringify(AUTH))}catch(e){}LOGIN_ERR="";render();load();},
-    logout(){AUTH=null;READY=false;PEOPLE=[];S={events:[],txns:[],inbox:[],params:defaultParams(),venues:{}};try{localStorage.removeItem(AKEY)}catch(e){}render();},
+    lgwho(){LG.who=d.who;LOGIN_ERR="";render();setTimeout(()=>{const x=document.getElementById("lg-pw")||document.getElementById("lg-code");if(x)x.focus();},50);},
+    lgback(){LG.who="";LOGIN_ERR="";render();},
+    lgin(){const pw=v("lg-pw");if(!pw){toast("请输入密码");return;}b.disabled=true;
+      api("apiLogin",LG.who,pw).then(j=>signedIn(JSON.parse(j))).catch(e=>{LOGIN_ERR=e.message;render();});},
+    lgset(){const code=v("lg-code").trim(),p1=v("lg-new"),p2=v("lg-new2");
+      if(!code){toast("请输入团队口令");return;}if(p1.length<6){toast("密码至少 6 位");return;}if(p1!==p2){toast("两次输入的密码不一样");return;}b.disabled=true;
+      api("apiSetPassword",LG.who,code,p1).then(j=>signedIn(JSON.parse(j))).catch(e=>{LOGIN_ERR=e.message;if(/已经设置/.test(e.message))LG.people=null;render();});},
+    chpw(){UI.open="chpw";renderSheet();},
+    chpwsave(){const o=v("cp-old"),p1=v("cp-new"),p2=v("cp-new2");if(p1.length<6){toast("新密码至少 6 位");return;}if(p1!==p2){toast("两次输入的新密码不一样");return;}b.disabled=true;
+      api("apiChangePassword",AUTH.token,o,p1).then(()=>{UI.open=null;renderSheet();toast("密码已修改");}).catch(e=>{b.disabled=false;toast(e.message);});},
+    logout(){if(AUTH&&AUTH.token)api("apiLogout",AUTH.token).catch(()=>{});AUTH=null;READY=false;LG={people:null,who:"",busy:false};PEOPLE=[];S={events:[],txns:[],inbox:[],params:defaultParams(),venues:{}};try{localStorage.removeItem(AKEY)}catch(e){}render();},
   };
   A[act]&&A[act]();
 });
@@ -1136,7 +1162,8 @@ document.addEventListener("change",ev=>{
   if(d.param){S.params[d.param]=(+t.value||0)/100;commit("参数已更新");return;}
   if(d.share){S.params.shares[d.share]=(+t.value||0)/100;commit("分红比例已更新");return;}
 });
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&UI.open){UI.open=null;renderSheet();}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&UI.open){UI.open=null;renderSheet();}
+  if(e.key==="Enter"&&e.target.dataset&&e.target.dataset.enter){const b=document.querySelector(`[data-act="${e.target.dataset.enter}"]`);if(b)b.click();}});
 let lastM=isM(),lastW=wide();
 window.addEventListener("resize",()=>{if(isM()!==lastM||wide()!==lastW){lastM=isM();lastW=wide();render();}});
 document.getElementById("logo2").src=document.querySelector(".side .logo").src;
